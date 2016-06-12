@@ -62,61 +62,12 @@ FODRDataset <- R6::R6Class("FODRDataset",
                              },
                              get_records = function(nrows = NULL, refine = NULL, exclude = NULL, sort = NULL, q = NULL, lang = NULL, geofilter.distance = NULL, geofilter.polygon = NULL, debug = FALSE) {
                                if (is.null(nrows)) nrows <- self$info$metas$records_count
-                               url <- get_portal_url(self$portal, "records") %>%
-                                 paste0("search?dataset=", self$id) %>%
-                                 add_parameters_to_url(nrows, refine, exclude, sort, q, lang, geofilter.distance, geofilter.polygon, debug)
                                
-                               res <- jsonlite::fromJSON(url, simplifyVector = FALSE, flatten = FALSE)$records
-                               
-                               out <- if (length(res) > 0) {
-                                 # Find all fields
-                                 tres <- res %>%
-                                   purrr::transpose()
-                                 fields <- suppressWarnings(tres$fields %>%
-                                   purrr::transpose())
-                                 
-                                 # Check if geo_shape field for GIS processing
-                                 geo_shape <- if ("geo_shape" %in% names(fields)) fields$geo_shape else NULL
-                                 
-                                 # Remove fields that have too many elements
-                                 lfields <- lapply(fields, function(x) length(unlist(x)))
-                                 fields <- fields[lfields <= nrows]
-                                 
-                                 records <- fields %>% 
-                                   lapply(function(x) {
-                                     x[sapply(x, is.null)] <- NA
-                                     unlist(x)}) %>%
-                                   dplyr::tbl_df()
-                                 
-                                 # Handle GIS information
-                                 geometry <- tres$geometry
-                                 if (!is.null(geometry)) {
-                                   geometry  <- geometry %>% 
-                                     purrr::transpose()
-                                   geometry$type <- unlist(geometry$type)
-                                   dfLonlat <- lapply(geometry$coordinates, function(x) dplyr::data_frame(lng = x[[1]], lat = x[[2]])) %>% 
-                                     dplyr::bind_rows()
-                                   records <- dplyr::bind_cols(records, dfLonlat)
-                                 }
-                                 
-                                 if (!is.null(geo_shape)) {
-                                   geo_shape  <- geo_shape %>% 
-                                     purrr::transpose()
-                                   geo_shape$type <- unlist(geo_shape$type)
-                                   
-                                   # Can have LineString or MultiLineString, Polygon or MultiPolygon
-                                   dfGeoShape <- dplyr::data_frame(geo_shape = lapply(seq_along(geo_shape$type), function(i) {
-                                     switch(geo_shape$type[i],
-                                            LineString = tidy_line_string(geo_shape$coordinates[[i]]),
-                                            MultiLineString = lapply(geo_shape$coordinates[[i]], tidy_line_string),
-                                            Polygon = tidy_polygon(geo_shape$coordinates[[i]]),
-                                            MultiPolygon = lapply(geo_shape$coordinates[[i]], tidy_polygon))
-                                   }))
-                                   records <- dplyr::bind_cols(records, dfGeoShape)
-                                 }
-                               } else dplyr::data_frame()
-                               
-                               self$data <- out
+                               self$data <- if (nrows < 10000) {
+                                 get_records(self$portal, self$id, nrows, refine, exclude, sort, q, lang, geofilter.distance, geofilter.polygon, debug) 
+                                 } else {
+                                 download_records()
+                               }
                                self$data
                              },
                              
@@ -137,3 +88,73 @@ FODRDataset <- R6::R6Class("FODRDataset",
                                cat("--------------------------------------------------------------------\n")
                              }
                            ))
+
+
+
+get_records <- function(portal, id, nrows, refine, exclude, sort, q, lang, geofilter.distance, geofilter.polygon, debug){
+  url <- get_portal_url(portal, "records") %>%
+    paste0("search?dataset=", id) %>%
+    add_parameters_to_url(nrows, refine, exclude, sort, q, lang, geofilter.distance, geofilter.polygon, debug)
+  
+  res <- jsonlite::fromJSON(url, simplifyVector = FALSE, flatten = FALSE)$records
+  
+  if (length(res) > 0) {
+    # Find all fields
+    tres <- res %>%
+      purrr::transpose()
+    fields <- suppressWarnings(tres$fields %>%
+                                 purrr::transpose())
+    
+    # Check if geo_shape field for GIS processing
+    geo_shape <- if ("geo_shape" %in% names(fields)) fields$geo_shape else NULL
+    
+    # Remove fields that have too many elements
+    lfields <- lapply(fields, function(x) length(unlist(x)))
+    fields <- fields[lfields <= nrows]
+    
+    records <- fields %>% 
+      lapply(function(x) {
+        x[sapply(x, is.null)] <- NA
+        unlist(x)}) %>%
+      dplyr::tbl_df()
+    
+    # Handle GIS information
+    geometry <- tres$geometry
+    if (!is.null(geometry)) {
+      geometry  <- geometry %>% 
+        purrr::transpose()
+      geometry$type <- unlist(geometry$type)
+      dfLonlat <- lapply(geometry$coordinates, function(x) dplyr::data_frame(lng = x[[1]], lat = x[[2]])) %>% 
+        dplyr::bind_rows()
+      records <- dplyr::bind_cols(records, dfLonlat)
+    }
+    
+    if (!is.null(geo_shape)) {
+      geo_shape  <- geo_shape %>% 
+        purrr::transpose()
+      geo_shape$type <- unlist(geo_shape$type)
+      
+      # Can have LineString or MultiLineString, Polygon or MultiPolygon
+      dfGeoShape <- dplyr::data_frame(geo_shape = lapply(seq_along(geo_shape$type), function(i) {
+        switch(geo_shape$type[i],
+               LineString = tidy_line_string(geo_shape$coordinates[[i]]),
+               MultiLineString = lapply(geo_shape$coordinates[[i]], tidy_line_string),
+               Polygon = tidy_polygon(geo_shape$coordinates[[i]]),
+               MultiPolygon = lapply(geo_shape$coordinates[[i]], tidy_polygon))
+      }))
+      records <- dplyr::bind_cols(records, dfGeoShape)
+    }
+  } else dplyr::data_frame()
+}
+
+download_records <- function(portal, id, nrows, q) {
+  tmp <- tempfile()
+  url <- get_portal_url_v2(portal, "catalog") %>% 
+    paste("datasets", id, "exports/csv&rows=", sep = "/") %>% 
+    paste0(nrows)
+  curl::curl_download(url, tmp)
+  dfDread.csv2(file = tmp)
+  curl::curl_download("http://opendata.paris.fr/api/v2/catalog/datasets/troncon_voie/exports/csv?rows=-1&staged=false&timezone=UTC&delimiter=%3B",
+                      tmp)
+  
+}

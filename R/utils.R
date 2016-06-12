@@ -1,8 +1,14 @@
 # Get base portal API url
 get_portal_url <- function(portal, endpoint){
   stopifnot(portal %in% portals()$portals)
-  paste0(get_base_url(portal), "/api/", endpoint, "/1.0/")
+  paste(get_base_url(portal), "api", endpoint, "1.0", "", sep = "/")
 }
+
+get_portal_url_v2 <- function(portal, source){
+  stopifnot(portal %in% portals()$portals)
+  paste(get_base_url(portal), "api", "v2", source, sep = "/")
+}
+
 
 # Search for datasets on a portal
 search_datasets <- function(portal, nrows = NULL, refine = NULL, exclude = NULL, sort = NULL, q = NULL, lang = NULL) {
