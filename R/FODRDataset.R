@@ -152,8 +152,31 @@ download_records <- function(portal, id, nrows, q) {
   url <- get_portal_url_v2(portal, "catalog") %>% 
     paste("datasets", id, "exports/csv&rows=", sep = "/") %>% 
     paste0(nrows)
-  curl::curl_download(url, tmp)
-  dfDread.csv2(file = tmp)
+  curl::curl_download(url, tmp, quiet = FALSE)
+  
+  res <- jsonlite::fromJSON(txt = tmp, simplifyVector = FALSE, flatten = FALSE)
+  if (length(res) > 0) {
+    # Find all fields
+    tres <- res %>%
+      purrr::transpose()
+    
+    fields <- names(tres)
+    lfields <- lapply(tres, function(x) length(unlist(x)))
+    
+    tres_geom <- tres[lfields > nrows]
+    tres <- tres[lfields <= nrows]
+    
+    # Handle GIS information
+    if (length(tres_geom) > 0) {
+      # Keep geom or geo_shape
+      geo_shape  <- (tres_geom[[which(names(tres_geom) %in% c("geom", "geo_shape"))]] %>% 
+        purrr::transpose())$geometry %>% purrr::transpose()
+      geo_shape$type <- unlist(geo_shape$type)
+    }
+    
+  }
+  
+  read.csv2(file = tmp)
   curl::curl_download("http://opendata.paris.fr/api/v2/catalog/datasets/troncon_voie/exports/csv?rows=-1&staged=false&timezone=UTC&delimiter=%3B",
                       tmp)
   
